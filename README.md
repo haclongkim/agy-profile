@@ -94,11 +94,33 @@ agy-profile random
 | `agy-profile list` | List profiles; `*` = matches the logged-in account |
 | `agy-profile current` | Show the active profile; warns if the current account was never saved |
 | `agy-profile delete <name>` | Delete a saved profile (the logged-in account is not affected) |
+| `agy-profile export <name> [file]` | Export a profile to a password-protected, portable file |
+| `agy-profile import <file> [name]` | Import a profile from an exported file |
 | `agy-profile logout` | Log out — the next `agy` run will ask you to log in again |
 | `agy-profile help` | Show help |
 | `-Force` flag | Skip confirmations and the running-`agy` check |
+| `-Password <pwd>` flag | Non-interactive password for `export`/`import` (prefer the prompt — see below) |
 
 Profile names may only contain letters, digits, `-` and `_`.
+
+### Moving a profile to another machine
+
+`save`/`switch` only ever touch a local copy encrypted with this Windows user's DPAPI
+key — by design, that copy is useless on any other machine or account. To back up a
+profile or move it elsewhere, use `export`/`import` instead, which re-encrypts the
+profile with a **password** you choose instead of DPAPI:
+
+```cmd
+agy-profile export work work.agyprofile   :: prompts for a password (typed twice)
+:: copy work.agyprofile to the other machine, e.g. via USB drive or a private channel
+agy-profile import work.agyprofile        :: prompts for the password, restores the profile
+```
+
+- The password is never stored anywhere — if you lose it, the export is unrecoverable.
+- Treat `.agyprofile` files as sensitive: anyone with the file **and** the password
+  can log in as that account. Don't commit them to a repo or send them over a
+  channel you don't trust.
+- A wrong password fails closed with a clear error and writes nothing to disk.
 
 ## Built-in safety mechanisms
 
@@ -125,7 +147,13 @@ Run `agy-profile save <current-name> -Force` to update the saved copy.
 No — by design, conversation/knowledge data is shared across profiles.
 Conversations from another account still show up in the list, but the server will
 refuse to resume them unless they belong to the logged-in account. To separate them:
-see section 5.3 in [DESIGN.md](DESIGN.md).
+see section 5.4 in [DESIGN.md](DESIGN.md).
+
+**Is `export`/`import` the same encryption as the local `.dpapi` files?**
+No, and intentionally so. Local saves use DPAPI, which is tied to this Windows user
+and machine and cannot be moved. Exports use a password-derived key (PBKDF2 + AES-256
++ HMAC-SHA256) instead, so the resulting `.agyprofile` file is portable — see section
+5.3 in [DESIGN.md](DESIGN.md) for the exact construction.
 
 **Does this work for the Antigravity IDE?**
 No. This tool only manages the **CLI** (`agy.exe`) login. The IDE keeps its own state.

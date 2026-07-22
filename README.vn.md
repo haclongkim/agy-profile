@@ -94,11 +94,32 @@ agy-profile random
 | `agy-profile list` | Liệt kê profile; dấu `*` = trùng tài khoản đang đăng nhập |
 | `agy-profile current` | Cho biết đang ở profile nào; cảnh báo nếu tài khoản hiện tại chưa được lưu |
 | `agy-profile delete <tên>` | Xóa bản lưu của profile (không ảnh hưởng tài khoản đang đăng nhập) |
+| `agy-profile export <tên> [file]` | Xuất profile ra 1 file mã hóa bằng mật khẩu, mang đi được |
+| `agy-profile import <file> [tên]` | Nhập profile từ file đã export |
 | `agy-profile logout` | Đăng xuất — lần chạy `agy` tới sẽ yêu cầu đăng nhập lại |
 | `agy-profile help` | Hướng dẫn |
 | Cờ `-Force` | Bỏ qua câu hỏi xác nhận và kiểm tra `agy` đang chạy |
+| Cờ `-Password <mk>` | Truyền mật khẩu không tương tác cho `export`/`import` (nên ưu tiên nhập tay — xem bên dưới) |
 
 Tên profile chỉ được chứa chữ không dấu, số, `-` và `_`.
+
+### Mang profile sang máy khác
+
+`save`/`switch` chỉ thao tác trên bản mã hóa DPAPI cục bộ — theo thiết kế, bản đó
+vô dụng trên máy/user khác. Để backup hoặc mang profile sang nơi khác, dùng
+`export`/`import`: chúng mã hóa lại profile bằng **mật khẩu** do bạn chọn thay vì DPAPI:
+
+```cmd
+agy-profile export work work.agyprofile   :: hỏi mật khẩu (gõ 2 lần để xác nhận)
+:: copy work.agyprofile sang máy khác, ví dụ qua USB hoặc kênh riêng tư
+agy-profile import work.agyprofile        :: hỏi lại mật khẩu, khôi phục profile
+```
+
+- Mật khẩu không được lưu ở đâu cả — mất mật khẩu là mất luôn file export đó.
+- Coi file `.agyprofile` như dữ liệu nhạy cảm: ai có file **và** mật khẩu đều
+  đăng nhập được vào tài khoản đó. Đừng commit file này lên repo hay gửi qua
+  kênh không tin cậy.
+- Sai mật khẩu sẽ báo lỗi rõ ràng và không ghi bất cứ gì ra đĩa (fail-closed).
 
 ## Cơ chế an toàn tích hợp sẵn
 
@@ -122,8 +143,14 @@ Chạy `agy-profile save <tên đang dùng> -Force` để cập nhật bản lư
 **Lịch sử hội thoại có tách theo profile không?**
 Không — theo thiết kế, dữ liệu hội thoại/knowledge dùng chung giữa các profile.
 Hội thoại của tài khoản khác vẫn hiện trong danh sách nhưng server sẽ không cho
-resume nếu không thuộc tài khoản đang đăng nhập. Muốn tách riêng: xem mục 5.3
+resume nếu không thuộc tài khoản đang đăng nhập. Muốn tách riêng: xem mục 5.4
 trong [DESIGN.md](DESIGN.md).
+
+**`export`/`import` có dùng chung cơ chế mã hóa với file `.dpapi` cục bộ không?**
+Không, và đây là chủ đích. Bản lưu cục bộ dùng DPAPI, gắn chặt với user Windows và
+máy hiện tại nên không mang đi được. Bản export dùng khóa suy ra từ mật khẩu
+(PBKDF2 + AES-256 + HMAC-SHA256) nên file `.agyprofile` mang đi được — xem mục 5.3
+trong [DESIGN.md](DESIGN.md) để biết cấu trúc mã hóa chi tiết.
 
 **Có dùng được cho Antigravity IDE không?**
 Không. Tool này chỉ quản lý đăng nhập của **CLI** (`agy.exe`). IDE lưu trạng thái riêng.

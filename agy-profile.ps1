@@ -18,7 +18,11 @@
 param(
     [Parameter(Position = 0)] [string]$Command = 'help',
     [Parameter(Position = 1)] [string]$Name,
-    [switch]$Force
+    [Parameter(Position = 2)] [string]$Path,
+    [switch]$Force,
+    # Non-interactive password for export/import. Prefer the interactive prompt -
+    # a value passed here can end up in shell history or process listings.
+    [string]$Password
 )
 
 $ErrorActionPreference = 'Stop'
@@ -154,16 +158,20 @@ function Read-ProfileMeta([string]$dirPath) {
     if (Test-Path $p) { Get-Content $p -Raw | ConvertFrom-Json } else { $null }
 }
 
+function Protect-JsonToFile([string]$json, [string]$path) {
+    $plain = [Text.Encoding]::UTF8.GetBytes($json)
+    $enc   = [Security.Cryptography.ProtectedData]::Protect($plain, $null, 'CurrentUser')
+    [IO.File]::WriteAllBytes($path, $enc)
+}
+
 function Protect-ToFile($cred, [string]$path) {
-    $json  = @{
+    $json = @{
         userName = $cred.UserName
         comment  = $cred.Comment
         persist  = $cred.Persist
         blobB64  = [Convert]::ToBase64String($cred.Blob)
     } | ConvertTo-Json
-    $plain = [Text.Encoding]::UTF8.GetBytes($json)
-    $enc   = [Security.Cryptography.ProtectedData]::Protect($plain, $null, 'CurrentUser')
-    [IO.File]::WriteAllBytes($path, $enc)
+    Protect-JsonToFile $json $path
 }
 
 function Unprotect-FromFile([string]$path) {
@@ -174,6 +182,105 @@ function Unprotect-FromFile([string]$path) {
         throw "Could not decrypt '$path'. DPAPI files can only be used by the same Windows user that created them."
     }
     [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
+}
+
+# --- Password-based crypto for export/import (portable, NOT tied to DPAPI) ---
+# DPAPI keys are bound to this Windows user + machine, so exported files use a
+# password-derived key instead: PBKDF2-SHA256 -> AES-256-CBC, encrypt-then-MAC
+# with HMAC-SHA256. Layout: "AGYP1"(5) + salt(16) + iv(16) + hmacTag(32) + ciphertext
+$EXPORT_MAGIC      = 'AGYP1'
+$EXPORT_KDF_ITERS  = 200000
+$EXPORT_HEADER_LEN = 5 + 16 + 16 + 32   # magic + salt + iv + tag
+
+function Get-ByteRange([byte[]]$arr, [int]$start, [int]$count) {
+    $out = New-Object byte[] $count
+    [Array]::Copy($arr, $start, $out, 0, $count)
+    return $out
+}
+
+function Test-BytesEqual([byte[]]$a, [byte[]]$b) {
+    if ($a.Length -ne $b.Length) { return $false }
+    $diff = 0
+    for ($i = 0; $i -lt $a.Length; $i++) { $diff = $diff -bor ($a[$i] -bxor $b[$i]) }
+    return $diff -eq 0
+}
+
+function ConvertFrom-SecureStringPlain($secure) {
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
+function Read-PasswordTwice([string]$prompt) {
+    if ($Password) { return $Password }
+    $p1 = ConvertFrom-SecureStringPlain (Read-Host -AsSecureString $prompt)
+    $p2 = ConvertFrom-SecureStringPlain (Read-Host -AsSecureString "Confirm $prompt")
+    if ($p1 -ne $p2) { throw 'Passwords do not match.' }
+    if ($p1.Length -lt 8) { throw 'Password must be at least 8 characters.' }
+    return $p1
+}
+
+function Read-PasswordOnce([string]$prompt) {
+    if ($Password) { return $Password }
+    ConvertFrom-SecureStringPlain (Read-Host -AsSecureString $prompt)
+}
+
+function Get-PasswordKeys([string]$password, [byte[]]$salt) {
+    $kdf = New-Object Security.Cryptography.Rfc2898DeriveBytes(
+        $password, $salt, $EXPORT_KDF_ITERS, [Security.Cryptography.HashAlgorithmName]::SHA256)
+    try {
+        $material = $kdf.GetBytes(64)   # first 32 bytes = AES key, last 32 = HMAC key
+        return @{ EncKey = Get-ByteRange $material 0 32; MacKey = Get-ByteRange $material 32 32 }
+    } finally { $kdf.Dispose() }
+}
+
+function Protect-WithPassword([byte[]]$plainBytes, [string]$password) {
+    $rng  = [Security.Cryptography.RandomNumberGenerator]::Create()
+    $salt = New-Object byte[] 16; $rng.GetBytes($salt)
+    $iv   = New-Object byte[] 16; $rng.GetBytes($iv)
+    $keys = Get-PasswordKeys $password $salt
+
+    $aes = [Security.Cryptography.Aes]::Create()
+    $aes.Key = $keys.EncKey; $aes.IV = $iv
+    $aes.Mode = [Security.Cryptography.CipherMode]::CBC
+    $aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
+    $cipherBytes = $aes.CreateEncryptor().TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
+
+    $hmac = New-Object Security.Cryptography.HMACSHA256(, $keys.MacKey)
+    $tag  = $hmac.ComputeHash($salt + $iv + $cipherBytes)
+
+    [Text.Encoding]::ASCII.GetBytes($EXPORT_MAGIC) + $salt + $iv + $tag + $cipherBytes
+}
+
+function Unprotect-WithPassword([byte[]]$blob, [string]$password) {
+    if ($blob.Length -lt $EXPORT_HEADER_LEN) {
+        throw 'File is too short to be a valid agy-profile export.'
+    }
+    $magic = [Text.Encoding]::ASCII.GetString((Get-ByteRange $blob 0 5))
+    if ($magic -ne $EXPORT_MAGIC) {
+        throw 'Unrecognized file format (bad header). Is this really an .agyprofile export?'
+    }
+    $salt        = Get-ByteRange $blob 5 16
+    $iv          = Get-ByteRange $blob 21 16
+    $tag         = Get-ByteRange $blob 37 32
+    $cipherBytes = Get-ByteRange $blob $EXPORT_HEADER_LEN ($blob.Length - $EXPORT_HEADER_LEN)
+
+    $keys = Get-PasswordKeys $password $salt
+    $hmac = New-Object Security.Cryptography.HMACSHA256(, $keys.MacKey)
+    $expectedTag = $hmac.ComputeHash($salt + $iv + $cipherBytes)
+    if (-not (Test-BytesEqual $expectedTag $tag)) {
+        throw 'Wrong password, or the file is corrupted.'
+    }
+
+    $aes = [Security.Cryptography.Aes]::Create()
+    $aes.Key = $keys.EncKey; $aes.IV = $iv
+    $aes.Mode = [Security.Cryptography.CipherMode]::CBC
+    $aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
+    try {
+        $aes.CreateDecryptor().TransformFinalBlock($cipherBytes, 0, $cipherBytes.Length)
+    } catch {
+        throw 'Wrong password, or the file is corrupted.'
+    }
 }
 
 function Write-ProfileMeta([string]$dir, [string]$profileName, $cred) {
@@ -392,23 +499,120 @@ function Invoke-Logout {
     Write-Host "Logged out. Run 'agy' to log in with another account, then 'agy-profile save <name>' to save it." -ForegroundColor Green
 }
 
+function Invoke-Export {
+    param([string]$ProfileName = $Name, [string]$OutFile = $Path)
+    Test-ProfileName $ProfileName
+    $dir      = Get-ProfileDir $ProfileName
+    $credFile = Join-Path $dir 'credential.dpapi'
+    if (-not (Test-Path $credFile)) {
+        throw "Profile '$ProfileName' does not exist. See: agy-profile list"
+    }
+    if (-not $OutFile) { $OutFile = Join-Path (Get-Location) "$ProfileName.agyprofile" }
+
+    if ((Test-Path $OutFile) -and -not (Confirm-Action "File '$OutFile' already exists. Overwrite?")) {
+        Write-Host 'Cancelled.'; return
+    }
+
+    $data = Unprotect-FromFile $credFile
+
+    $filesMap = @{}
+    foreach ($rel in $PER_PROFILE_FILES) {
+        $src = Join-Path $dir "files\$rel"
+        if (Test-Path $src) {
+            $filesMap[$rel] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($src))
+        }
+    }
+
+    $payload = @{
+        formatVersion = 1
+        profileName   = $ProfileName
+        exportedAt    = (Get-Date).ToString('s')
+        userName      = $data.userName
+        comment       = $data.comment
+        persist       = $data.persist
+        blobB64       = $data.blobB64
+        files         = $filesMap
+    } | ConvertTo-Json -Depth 5 -Compress
+
+    $password  = Read-PasswordTwice "Password to protect this export"
+    $encrypted = Protect-WithPassword ([Text.Encoding]::UTF8.GetBytes($payload)) $password
+    [IO.File]::WriteAllBytes($OutFile, $encrypted)
+
+    Write-Host "Exported profile '$ProfileName' to: $OutFile" -ForegroundColor Green
+    Write-Warning 'Keep the password safe - it cannot be recovered from the file.'
+    Write-Warning 'Anyone who obtains this file AND the password can log in as this account.'
+}
+
+function Invoke-Import {
+    param([string]$File = $Name, [string]$OverrideName = $Path)
+    if (-not $File) { throw "Missing file path. Usage: agy-profile import <file> [name]" }
+    if (-not (Test-Path $File)) { throw "File not found: $File" }
+
+    $password   = Read-PasswordOnce "Password for this export"
+    $blob       = [IO.File]::ReadAllBytes($File)
+    $plainBytes = Unprotect-WithPassword $blob $password
+    $payload    = [Text.Encoding]::UTF8.GetString($plainBytes) | ConvertFrom-Json
+
+    $targetName = if ($OverrideName) { $OverrideName } else { $payload.profileName }
+    Test-ProfileName $targetName
+
+    $dir = Get-ProfileDir $targetName
+    if (Test-Path (Join-Path $dir 'credential.dpapi')) {
+        if (-not (Confirm-Action "Profile '$targetName' already exists. Overwrite?")) {
+            Write-Host 'Cancelled.'; return
+        }
+    }
+    New-Item -ItemType Directory -Force $dir | Out-Null
+
+    $credJson = @{
+        userName = $payload.userName
+        comment  = $payload.comment
+        persist  = $payload.persist
+        blobB64  = $payload.blobB64
+    } | ConvertTo-Json
+    Protect-JsonToFile $credJson (Join-Path $dir 'credential.dpapi')
+
+    if ($payload.files) {
+        foreach ($prop in $payload.files.PSObject.Properties) {
+            $dst = Join-Path $dir "files\$($prop.Name)"
+            New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+            [IO.File]::WriteAllBytes($dst, [Convert]::FromBase64String($prop.Value))
+        }
+    }
+
+    $credForMeta = [PSCustomObject]@{
+        UserName = $payload.userName
+        Blob     = [Convert]::FromBase64String($payload.blobB64)
+    }
+    Write-ProfileMeta $dir $targetName $credForMeta
+
+    Write-Host "Imported profile '$targetName' from: $File" -ForegroundColor Green
+    Write-Host "This does not change your current login. Switch to it with: agy-profile switch $targetName"
+}
+
 function Invoke-Help {
     Write-Host @"
 agy-profile - Account (profile) manager for the Antigravity CLI
 
-Usage:  agy-profile <command> [name] [-Force]
+Usage:  agy-profile <command> [name] [path] [-Force] [-Password <pwd>]
 
-  save <name>     Save the logged-in account as profile <name>
-  switch <name>   Switch to the account of profile <name>
-  next            Switch to the next profile (round-robin, A-Z order)
-  random          Switch to a random profile other than the current one
-  list            List saved profiles
-  current         Show which profile is active
-  delete <name>   Delete the saved copy of a profile
-  logout          Log out (deletes the credential; auto-backup if unsaved)
-  help            Show this help
+  save <name>          Save the logged-in account as profile <name>
+  switch <name>        Switch to the account of profile <name>
+  next                 Switch to the next profile (round-robin, A-Z order)
+  random               Switch to a random profile other than the current one
+  list                 List saved profiles
+  current              Show which profile is active
+  delete <name>        Delete the saved copy of a profile
+  export <name> [file] Export a profile to a password-protected .agyprofile file
+                        (default file: .\<name>.agyprofile in the current folder)
+  import <file> [name] Import a profile from a .agyprofile file
+                        (default name: the one it was exported with)
+  logout               Log out (deletes the credential; auto-backup if unsaved)
+  help                 Show this help
 
-  -Force          Skip confirmations and the running-agy check
+  -Force               Skip confirmations and the running-agy check
+  -Password <pwd>      Non-interactive password for export/import (avoid when
+                        possible - it can leak via shell history / process list)
 
 First-time setup with 2 accounts:
   agy-profile save personal      # account 1 is currently logged in
@@ -416,6 +620,11 @@ First-time setup with 2 accounts:
   agy                            # log in with account 2 inside agy
   agy-profile save work
   agy-profile switch personal    # from now on, switching is one command
+
+Move a profile to another machine:
+  agy-profile export work work.agyprofile   # prompts for a password
+  # copy work.agyprofile to the other machine, then:
+  agy-profile import work.agyprofile
 "@
 }
 
@@ -431,6 +640,8 @@ try {
         'list'    { Invoke-List }
         'current' { Invoke-Current }
         'delete'  { Invoke-Delete }
+        'export'  { Invoke-Export }
+        'import'  { Invoke-Import }
         'logout'  { Invoke-Logout }
         'help'    { Invoke-Help }
         default   { Write-Host "Unknown command: '$Command'`n"; Invoke-Help; exit 1 }

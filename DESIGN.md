@@ -17,10 +17,10 @@
 │   ├── settings.json             <- theme, trustedWorkspaces        -> SHARED
 │   ├── jetski_state.pbtxt        <- onboarding, migrations (does NOT hold tokens)
 │   ├── installation_id           <- machine id                      -> SHARED
-│   ├── conversation_summaries.db <- conversation index              (see 5.3)
+│   ├── conversation_summaries.db <- conversation index              (see 5.4)
 │   ├── cache\
 │   │   ├── default_project_id.txt     <- account-bound              -> PER PROFILE
-│   │   ├── conversation_metadata.json <- conversation metadata      (see 5.3)
+│   │   ├── conversation_metadata.json <- conversation metadata      (see 5.4)
 │   │   └── onboarding.json
 │   ├── conversations\  brain\  knowledge\  builtin\skills\  ...    -> SHARED
 ├── antigravity\                  <- IDE-agent side state (NOT touched)
@@ -102,6 +102,8 @@ agy-profile <command> [args]
   current           Name of the active profile (+ warning if the real credential
                     was changed outside the script, see 5.2)
   delete <name>     Delete a saved profile (does not affect the logged-in account)
+  export <name>     Export a profile to a password-protected, portable file
+  import <file>     Import a profile from an exported file
   logout            Delete the current credential (CredDelete) -> agy returns to
                     a logged-out state
   help              Usage help
@@ -148,7 +150,7 @@ Centralized constants at the top of the file:
 $CRED_TARGET       = 'gemini:antigravity'
 $CLI_DIR           = "$env:USERPROFILE\.gemini\antigravity-cli"
 $PROFILES_DIR      = "$env:USERPROFILE\.gemini\agy-profiles"
-$PER_PROFILE_FILES = @('cache\default_project_id.txt')   # extensible, see 5.3
+$PER_PROFILE_FILES = @('cache\default_project_id.txt')   # extensible, see 5.4
 ```
 
 ### 5.2 Safety & correctness
@@ -162,7 +164,47 @@ $PER_PROFILE_FILES = @('cache\default_project_id.txt')   # extensible, see 5.3
 | Invalid profile names | Whitelist `^[a-zA-Z0-9_-]+$`, blocks path traversal |
 | A newer `agy` version renaming the cred target | The target is a single constant; `current` reports a clear "credential not found" instead of a confusing error |
 
-### 5.3 Open question: should conversation data be shared?
+### 5.3 Export / import: portable profiles
+
+`save`/`switch` only ever touch the local, DPAPI-protected copy — by design that copy
+is useless off this machine (section 5.2). Moving a profile to another machine, or
+just keeping an off-disk backup, needs a second, portable envelope:
+
+- **`export <name> [file]`**: read the profile's `credential.dpapi` (decrypt via
+  DPAPI, same as `switch` does), bundle it with the per-profile files
+  (`$PER_PROFILE_FILES`) into one JSON payload, then encrypt that payload with a
+  **password** the user supplies interactively (`Read-Host -AsSecureString`, typed
+  twice to confirm). Output is a single file, default extension `.agyprofile`.
+- **`import <file> [name]`**: prompt for the password, decrypt, and write a normal
+  profile directory (re-encrypting the credential with **this machine's DPAPI key**,
+  not the password) — from then on `import` output behaves exactly like `save` output.
+
+Password-based encryption (not DPAPI) is what makes the file portable: DPAPI keys
+never leave the machine/user that created them, so an export protected with DPAPI
+would be exactly as unusable elsewhere as `credential.dpapi` already is.
+
+**Cipher construction** — encrypt-then-MAC, chosen because it only needs primitives
+available in classic .NET Framework (Windows PowerShell 5.1 has no `AesGcm`, which
+is .NET Core 3.0+ only):
+
+```
+PBKDF2-HMACSHA256(password, salt, 200_000 iters) -> 64 bytes
+  -> first 32 bytes = AES-256 key, last 32 bytes = HMAC-SHA256 key
+AES-256-CBC encrypt (PKCS7 padding) the JSON payload with a random IV
+HMAC-SHA256 over (salt || iv || ciphertext) = tag
+
+file layout:  "AGYP1"(5) | salt(16) | iv(16) | tag(32) | ciphertext
+```
+
+Import verifies the HMAC tag **before** attempting to decrypt or parse anything —
+a wrong password or a corrupted/tampered file fails closed with one message
+("Wrong password, or the file is corrupted.") and writes nothing to disk.
+
+Not a goal: multi-file archives, compression, or cloud sync. One password-encrypted
+file per profile keeps the format simple enough to read in ~150 lines and to reason
+about without a Zip/Compression dependency.
+
+### 5.4 Open question: should conversation data be shared?
 
 `conversations\`, `conversation_summaries.db`, and `cache\conversation_metadata.json`
 are local data but **tied to the server-side account**. Sharing them can mix the
@@ -185,6 +227,11 @@ server refuses to resume conversations that don't belong to the logged-in accoun
    auto-backed up to `_unsaved-*` with a warning
 6. Copy `credential.dpapi` to another Windows user -> decryption fails (DPAPI by design)
 7. `delete work` -> current login unchanged; `list` no longer shows `work`
+8. `export work` -> prompts for and confirms a password -> writes `work.agyprofile`;
+   `import work.agyprofile other-name` with the same password -> new profile
+   `other-name` whose credential hash matches `work`'s
+9. `import work.agyprofile` with a wrong password -> fails with "Wrong password, or
+   the file is corrupted." and creates no partial profile directory
 
 ## 7. Roadmap
 
@@ -192,7 +239,8 @@ server refuses to resume conversations that don't belong to the logged-in accoun
 |---|---|
 | **v1 (MVP)** | `save / switch / list / current / logout` + DPAPI + hash guard + auto-backup of unsaved accounts |
 | **v1.1** | `delete`, `next`, `random`, `-Force`, colored output, running-`agy` check |
-| **v2** | Optional `-WithConversations` (separate conversation data per profile, see 5.3); `agyp work -- <agy command>` alias to run one command under a given profile and switch back |
+| **v1.2** | `export` / `import` — password-protected, portable profile files (section 5.3) |
+| **v2** | Optional `-WithConversations` (separate conversation data per profile, see 5.4); `agyp work -- <agy command>` alias to run one command under a given profile and switch back |
 | **Watch** | New `agy` versions may change the token storage mechanism (renamed cred target, or a move to files) -> the `current` command is the early-detection point |
 
 ---
