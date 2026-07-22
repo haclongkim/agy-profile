@@ -1,35 +1,36 @@
-# Thiết kế: `agy-profile` — Chuyển đổi tài khoản (profile) cho Antigravity CLI
+# Design: `agy-profile` — Account (profile) switcher for the Antigravity CLI
 
-> Tài liệu thiết kế cho bộ script Windows (`agy-profile.cmd` + `agy-profile.ps1`) giúp lưu và
-> chuyển đổi nhanh **tài khoản đăng nhập** của Antigravity CLI (`agy.exe`), trong khi
-> **giữ nguyên toàn bộ dữ liệu còn lại** (settings, knowledge, skills, MCP config...) dùng chung.
+> Design document for a Windows script pair (`agy-profile.cmd` + `agy-profile.ps1`)
+> that saves and quickly switches the **login account** of the Antigravity CLI
+> (`agy.exe`), while **keeping all other data** (settings, knowledge, skills,
+> MCP config...) shared between accounts.
 
 ---
 
-## 1. Khảo sát thực tế (trên máy này, 2026-07-22)
+## 1. Field investigation (performed on a real machine, 2026-07-22)
 
-### 1.1 Trạng thái CLI nằm ở đâu
+### 1.1 Where the CLI state lives
 
 ```
 %USERPROFILE%\.gemini\
-├── antigravity-cli\              ← ★ thư mục trạng thái của agy.exe (CLI)
-│   ├── settings.json             ← theme, trustedWorkspaces        → DÙNG CHUNG
-│   ├── jetski_state.pbtxt        ← onboarding, migrations (KHÔNG chứa token)
-│   ├── installation_id           ← id máy                          → DÙNG CHUNG
-│   ├── conversation_summaries.db ← index hội thoại                 (xem mục 5.3)
+├── antigravity-cli\              <- * state folder of agy.exe (the CLI)
+│   ├── settings.json             <- theme, trustedWorkspaces        -> SHARED
+│   ├── jetski_state.pbtxt        <- onboarding, migrations (does NOT hold tokens)
+│   ├── installation_id           <- machine id                      -> SHARED
+│   ├── conversation_summaries.db <- conversation index              (see 5.3)
 │   ├── cache\
-│   │   ├── default_project_id.txt     ← gắn với tài khoản          → THEO PROFILE
-│   │   ├── conversation_metadata.json ← metadata hội thoại         (xem mục 5.3)
+│   │   ├── default_project_id.txt     <- account-bound              -> PER PROFILE
+│   │   ├── conversation_metadata.json <- conversation metadata      (see 5.3)
 │   │   └── onboarding.json
-│   ├── conversations\  brain\  knowledge\  builtin\skills\  ...   → DÙNG CHUNG
-├── antigravity\                  ← trạng thái phía IDE-agent (KHÔNG đụng tới)
-├── antigravity-ide\              ← trạng thái IDE (KHÔNG đụng tới)
-└── config\                       ← hạ tầng chung (KHÔNG đụng tới)
+│   ├── conversations\  brain\  knowledge\  builtin\skills\  ...    -> SHARED
+├── antigravity\                  <- IDE-agent side state (NOT touched)
+├── antigravity-ide\              <- IDE state (NOT touched)
+└── config\                       <- shared infrastructure (NOT touched)
 ```
 
-### 1.2 Đăng nhập lưu ở đâu — phát hiện quan trọng nhất
+### 1.2 Where the login lives — the key finding
 
-Token đăng nhập **không nằm trong file nào** ở `.gemini`. Nó nằm trong
+The login token is **not in any file** under `.gemini`. It lives in
 **Windows Credential Manager**:
 
 ```
@@ -38,156 +39,164 @@ User   : antigravity
 Type   : Generic (persistence: Local machine)
 ```
 
-→ **Đổi tài khoản = đổi credential blob này** (+ vài file cache nhỏ gắn với tài khoản).
-Không cần copy/di chuyển thư mục nào cả.
+-> **Changing accounts = swapping this credential blob** (+ a couple of small
+account-bound cache files). No folder needs to be copied or moved at all.
 
-## 2. Yêu cầu
+## 2. Requirements
 
-- **Chỉ chuyển đổi danh tính đăng nhập.** Mọi thứ khác — settings, trustedWorkspaces,
-  knowledge, skills, MCP config, brain — dùng chung giữa các profile.
-- 1 lệnh để lưu tài khoản hiện tại, 1 lệnh để chuyển: `agy-profile save work`,
+- **Switch only the login identity.** Everything else — settings, trustedWorkspaces,
+  knowledge, skills, MCP config, brain — is shared across profiles.
+- One command to save the current account, one to switch: `agy-profile save work`,
   `agy-profile switch personal`
-- Không cần quyền Admin, không sửa `agy.exe`
-- Token lưu trên đĩa phải được **mã hóa DPAPI** (chỉ user hiện tại trên máy này giải mã được)
+- No Administrator rights, no modification of `agy.exe`
+- Tokens stored on disk must be **DPAPI-encrypted** (only the current user on this
+  machine can decrypt them)
 
-**Ngoài phạm vi:** profile cho Antigravity IDE; đồng bộ profile giữa nhiều máy
-(DPAPI chủ đích chặn việc này).
+**Out of scope:** profiles for the Antigravity IDE; syncing profiles across machines
+(DPAPI intentionally prevents this).
 
-## 3. Cơ chế cốt lõi: Swap credential trong Credential Manager
+## 3. Core mechanism: swapping the Credential Manager entry
 
 ```
-                    ┌──────────────────────────────────────────┐
-                    │  Windows Credential Manager               │
-   switch work ───► │  gemini:antigravity  = <blob của "work">  │ ◄── agy.exe đọc
-                    └──────────────────────────────────────────┘
-                                      ▲
-                                      │ CredWrite (ghi đè)
+                    +------------------------------------------+
+                    |  Windows Credential Manager               |
+   switch work ---> |  gemini:antigravity  = <blob of "work">   | <-- read by agy.exe
+                    +------------------------------------------+
+                                      ^
+                                      | CredWrite (overwrite)
         %USERPROFILE%\.gemini\agy-profiles\
         ├── _active.txt
         ├── work\
-        │   ├── credential.dpapi        ← blob CredRead, mã hóa DPAPI
-        │   └── default_project_id.txt  ← bản sao cache gắn tài khoản
+        │   ├── credential.dpapi        <- CredRead blob, DPAPI-encrypted
+        │   └── default_project_id.txt  <- copy of the account-bound cache file
         └── personal\
             ├── credential.dpapi
             └── default_project_id.txt
 ```
 
-- **`save <name>`**: `CredRead("gemini:antigravity")` → mã hóa DPAPI
-  (`ProtectedData.Protect`, scope `CurrentUser`) → ghi `credential.dpapi`;
-  đồng thời sao lưu `cache\default_project_id.txt` của tài khoản đó.
-- **`switch <name>`**: giải mã `credential.dpapi` → `CredWrite` ghi đè
-  `gemini:antigravity`; chép trả `default_project_id.txt`; cập nhật `_active.txt`.
-- Các file dùng chung **không bị đụng tới** — đúng yêu cầu "giữ những thông tin khác".
+- **`save <name>`**: `CredRead("gemini:antigravity")` -> DPAPI-encrypt
+  (`ProtectedData.Protect`, scope `CurrentUser`) -> write `credential.dpapi`;
+  also back up that account's `cache\default_project_id.txt`.
+- **`switch <name>`**: decrypt `credential.dpapi` -> `CredWrite` overwrites
+  `gemini:antigravity`; copy back `default_project_id.txt`; update `_active.txt`.
+- Shared files are **never touched** — matching the "keep everything else" requirement.
 
-### Vì sao không dùng junction swap cả thư mục (thiết kế cũ)?
+### Why not junction-swap the whole state folder (the earlier design)?
 
-Bản nháp đầu đề xuất junction-swap toàn bộ thư mục trạng thái. Bị loại vì: (1) token vốn
-không nằm trong thư mục nên swap thư mục **không đổi được tài khoản**; (2) trái yêu cầu
-dùng chung settings/knowledge; (3) phức tạp và rủi ro hơn nhiều so với swap 1 credential.
+The first draft proposed junction-swapping the entire state directory. Rejected
+because: (1) the token is not inside the folder, so swapping the folder **cannot
+change the account**; (2) it contradicts the requirement to share settings/knowledge;
+(3) it is far more complex and riskier than swapping a single credential.
 
-## 4. Giao diện lệnh
+## 4. Command-line interface
 
 ```
 agy-profile <command> [args]
 
-  save <name>       Lưu tài khoản đang đăng nhập thành profile <name>
-                    (ghi đè nếu đã tồn tại, có xác nhận)
-  switch <name>     Chuyển sang tài khoản của profile <name>
-  list              Liệt kê profile, đánh dấu (*) profile active
-  current           Tên profile active (+ cảnh báo nếu credential thực tế
-                    đã bị đổi ngoài script, xem 5.2)
-  delete <name>     Xóa profile đã lưu (không ảnh hưởng tài khoản đang đăng nhập)
-  logout            Xóa credential hiện tại (CredDelete) → agy quay về trạng thái chưa đăng nhập
-  help              Hướng dẫn
+  save <name>       Save the currently logged-in account as profile <name>
+                    (overwrites if it exists, with confirmation)
+  switch <name>     Switch to the account of profile <name>
+  next              Switch to the next profile (round-robin, A-Z order)
+  random            Switch to a random profile other than the current one
+  list              List profiles, marking (*) the active one
+  current           Name of the active profile (+ warning if the real credential
+                    was changed outside the script, see 5.2)
+  delete <name>     Delete a saved profile (does not affect the logged-in account)
+  logout            Delete the current credential (CredDelete) -> agy returns to
+                    a logged-out state
+  help              Usage help
 ```
 
-### Luồng thiết lập lần đầu
+### First-time setup flow
 
 ```cmd
-:: đang đăng nhập tài khoản cá nhân
+:: personal account currently logged in
 agy-profile save personal
 
-:: đăng nhập tài khoản công việc: xóa cred cũ rồi login lại trong agy
+:: log in with the work account: delete the old cred, then log in again inside agy
 agy-profile logout
-agy                          :: → agy yêu cầu đăng nhập → dùng tài khoản công việc
+agy                          :: -> agy asks for login -> use the work account
 agy-profile save work
 
-:: từ nay chuyển qua lại chỉ 1 lệnh
+:: from now on, switching back and forth is a single command
 agy-profile switch personal
 agy-profile switch work
 ```
 
-## 5. Thiết kế kỹ thuật
+## 5. Technical design
 
-### 5.1 Cấu trúc file: `.cmd` wrapper + `.ps1` lõi
+### 5.1 File layout: `.cmd` wrapper + `.ps1` core
 
-CMD thuần **không gọi được** API `CredRead`/`CredWrite`/DPAPI, nên tách 2 file đặt cùng thư mục:
+Plain CMD **cannot call** the `CredRead`/`CredWrite`/DPAPI APIs, so the tool is split
+into two files kept in the same folder:
 
-- **`agy-profile.cmd`** — entry point cho người dùng, chỉ làm một việc:
+- **`agy-profile.cmd`** — user-facing entry point, does exactly one thing:
   ```bat
   @echo off
   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0agy-profile.ps1" %*
   ```
-- **`agy-profile.ps1`** — toàn bộ logic (~250 dòng):
-  - `Add-Type` khối P/Invoke `advapi32.dll`: `CredRead`, `CredWrite`, `CredDelete`,
-    `CredFree` (mẫu chuẩn, khoảng 60 dòng C# inline)
-  - DPAPI qua `[System.Security.Cryptography.ProtectedData]::Protect/Unprotect`
-    với scope `CurrentUser`
-  - `param($Command, $Name)` + `switch ($Command)` để dispatch
+- **`agy-profile.ps1`** — all the logic (~300 lines):
+  - `Add-Type` P/Invoke block for `advapi32.dll`: `CredRead`, `CredWrite`,
+    `CredDelete`, `CredFree` (standard pattern, ~60 lines of inline C#)
+  - DPAPI via `[System.Security.Cryptography.ProtectedData]::Protect/Unprotect`
+    with scope `CurrentUser`
+  - `param($Command, $Name)` + `switch ($Command)` dispatch
 
-Hằng số tập trung đầu file:
+Centralized constants at the top of the file:
 
 ```powershell
-$CRED_TARGET  = 'gemini:antigravity'
-$CLI_DIR      = "$env:USERPROFILE\.gemini\antigravity-cli"
-$PROFILES_DIR = "$env:USERPROFILE\.gemini\agy-profiles"
-$PER_PROFILE_FILES = @('cache\default_project_id.txt')   # mở rộng được, xem 5.3
+$CRED_TARGET       = 'gemini:antigravity'
+$CLI_DIR           = "$env:USERPROFILE\.gemini\antigravity-cli"
+$PROFILES_DIR      = "$env:USERPROFILE\.gemini\agy-profiles"
+$PER_PROFILE_FILES = @('cache\default_project_id.txt')   # extensible, see 5.3
 ```
 
-### 5.2 An toàn & tính đúng
+### 5.2 Safety & correctness
 
-| Rủi ro | Biện pháp |
+| Risk | Mitigation |
 |---|---|
-| Token nằm trên đĩa dạng đọc được | Luôn mã hóa DPAPI scope `CurrentUser`; file `credential.dpapi` vô dụng nếu copy sang máy/user khác |
-| Swap khi `agy` đang chạy (giữa phiên có thể refresh/ghi lại token) | Chặn bằng `Get-Process agy`; override bằng `-Force` |
-| `_active.txt` nói dối (user tự login tài khoản khác ngoài script) | `save` lưu kèm SHA-256 của blob; `current`/`switch` so hash blob thực tế với profile active → cảnh báo "credential đã thay đổi, hãy `save` lại trước khi switch" |
-| `switch` đè mất tài khoản chưa kịp lưu | Trước khi ghi đè, nếu blob hiện tại không khớp hash của bất kỳ profile nào → tự backup vào `_unsaved-<timestamp>\` rồi mới ghi |
-| Tên profile không hợp lệ | Whitelist `^[a-zA-Z0-9_-]+$`, chặn path traversal |
-| Version `agy` mới đổi tên cred target | Target là hằng số 1 chỗ; lệnh `current` báo rõ "không tìm thấy credential" thay vì lỗi khó hiểu |
+| Token readable on disk | Always DPAPI-encrypted with scope `CurrentUser`; `credential.dpapi` is useless if copied to another machine/user |
+| Swapping while `agy` is running (it may refresh/rewrite the token mid-session) | Blocked via `Get-Process agy`; override with `-Force` |
+| `_active.txt` lying (user manually logged into another account outside the script) | `save` stores a SHA-256 of the blob; `current`/`switch` compare the real blob hash against the active profile -> warn "credential changed, `save` again before switching" |
+| `switch` overwriting an account that was never saved | Before overwriting, if the current blob matches no profile's hash -> auto-backup to `_unsaved-<timestamp>\` first |
+| Invalid profile names | Whitelist `^[a-zA-Z0-9_-]+$`, blocks path traversal |
+| A newer `agy` version renaming the cred target | The target is a single constant; `current` reports a clear "credential not found" instead of a confusing error |
 
-### 5.3 Vấn đề mở: dữ liệu hội thoại có nên dùng chung?
+### 5.3 Open question: should conversation data be shared?
 
-`conversations\`, `conversation_summaries.db`, `cache\conversation_metadata.json` là dữ liệu
-local nhưng **gắn với tài khoản phía server**. Dùng chung có thể khiến danh sách hội thoại
-hiển thị lẫn giữa 2 tài khoản (vô hại về bảo mật local, nhưng gây nhiễu; server sẽ từ chối
-resume hội thoại không thuộc tài khoản đang đăng nhập).
+`conversations\`, `conversation_summaries.db`, and `cache\conversation_metadata.json`
+are local data but **tied to the server-side account**. Sharing them can mix the
+conversation lists of two accounts (harmless for local security, but noisy; the
+server refuses to resume conversations that don't belong to the logged-in account).
 
-- **v1**: dùng chung tất cả (đúng yêu cầu hiện tại), quan sát hành vi thực tế.
-- **Nếu thấy nhiễu**: thêm 3 mục trên vào `$PER_PROFILE_FILES` (cơ chế backup/restore
-  per-profile đã có sẵn, chỉ cần thêm dòng cấu hình — không đổi kiến trúc).
+- **v1**: share everything (matches the current requirement), observe real-world behavior.
+- **If it gets noisy**: add the three items above to `$PER_PROFILE_FILES` (the
+  per-profile backup/restore mechanism already exists — it's one config line,
+  no architectural change).
 
-## 6. Kiểm thử (test plan thủ công)
+## 6. Test plan (manual)
 
-1. `save personal` → thấy `credential.dpapi` (nội dung nhị phân, không lộ token) + hash
-2. `logout` → mở `agy` thấy yêu cầu đăng nhập lại → login tài khoản 2 → `save work`
-3. `switch personal` → mở `agy` → đúng tài khoản 1, không phải login lại;
-   `settings.json`/trustedWorkspaces/knowledge còn nguyên
-4. `switch work` khi `agy` đang mở → bị chặn; với `-Force` thì cho qua
-5. Login tay tài khoản 3 (không save) → `switch personal` → tài khoản 3 được tự backup
-   vào `_unsaved-*`, có cảnh báo
-6. Copy `credential.dpapi` sang user Windows khác → giải mã thất bại (DPAPI đúng thiết kế)
-7. `delete work` → còn login hiện tại không đổi; `list` không còn `work`
+1. `save personal` -> `credential.dpapi` appears (binary content, no token leak) + hash
+2. `logout` -> opening `agy` asks for login again -> log in with account 2 -> `save work`
+3. `switch personal` -> open `agy` -> correct account 1, no re-login needed;
+   `settings.json`/trustedWorkspaces/knowledge intact
+4. `switch work` while `agy` is open -> blocked; passes with `-Force`
+5. Manually log in with account 3 (unsaved) -> `switch personal` -> account 3 gets
+   auto-backed up to `_unsaved-*` with a warning
+6. Copy `credential.dpapi` to another Windows user -> decryption fails (DPAPI by design)
+7. `delete work` -> current login unchanged; `list` no longer shows `work`
 
-## 7. Lộ trình
+## 7. Roadmap
 
-| Giai đoạn | Nội dung |
+| Phase | Content |
 |---|---|
-| **v1 (MVP)** | `save / switch / list / current / logout` + DPAPI + hash-guard + auto-backup unsaved |
-| **v1.1** | `delete`, `-Force`, thông báo màu, kiểm tra `agy` process |
-| **v2** | Tùy chọn `-WithConversations` (tách dữ liệu hội thoại theo profile, mục 5.3); alias `agyp work -- <lệnh agy>` chạy 1 lệnh dưới profile chỉ định rồi switch về |
-| **Theo dõi** | Version `agy` mới có thể đổi cơ chế lưu token (đổi cred target, hoặc chuyển sang file) → lệnh `current` là chỗ phát hiện sớm |
+| **v1 (MVP)** | `save / switch / list / current / logout` + DPAPI + hash guard + auto-backup of unsaved accounts |
+| **v1.1** | `delete`, `next`, `random`, `-Force`, colored output, running-`agy` check |
+| **v2** | Optional `-WithConversations` (separate conversation data per profile, see 5.3); `agyp work -- <agy command>` alias to run one command under a given profile and switch back |
+| **Watch** | New `agy` versions may change the token storage mechanism (renamed cred target, or a move to files) -> the `current` command is the early-detection point |
 
 ---
 
-*Khảo sát mục 1 thực hiện trực tiếp trên máy này ngày 2026-07-22 với `agy.exe` tại
-`%LOCALAPPDATA%\agy\bin`. Thiết kế cũ (junction-swap toàn thư mục) đã bị thay thế — xem mục 3.*
+*The investigation in section 1 was performed directly on a Windows 11 machine on
+2026-07-22 with `agy.exe` under `%LOCALAPPDATA%\agy\bin`. The earlier design
+(junction-swapping the whole folder) has been replaced — see section 3.*

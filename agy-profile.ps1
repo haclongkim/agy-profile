@@ -1,13 +1,13 @@
-﻿<#
+<#
 .SYNOPSIS
-  agy-profile — Quản lý tài khoản (profile) cho Antigravity CLI (agy.exe)
+  agy-profile - Account (profile) manager for the Antigravity CLI (agy.exe)
 
 .DESCRIPTION
-  Lưu và chuyển đổi nhanh tài khoản đăng nhập của Antigravity CLI.
-  Token đăng nhập của agy nằm trong Windows Credential Manager
-  (target: gemini:antigravity). Script này đọc/ghi credential đó,
-  lưu bản sao mã hóa DPAPI trên đĩa cho từng profile.
-  Mọi dữ liệu khác (settings, knowledge, skills, MCP config...) dùng chung.
+  Save and quickly switch between login accounts of the Antigravity CLI.
+  The agy login token lives in Windows Credential Manager
+  (target: gemini:antigravity). This script reads/writes that credential
+  and stores a DPAPI-encrypted copy on disk for each profile.
+  Everything else (settings, knowledge, skills, MCP config...) stays shared.
 
 .EXAMPLE
   agy-profile save work
@@ -23,17 +23,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ─── Cấu hình ────────────────────────────────────────────────────────────────
+# --- Configuration -----------------------------------------------------------
 $CRED_TARGET       = 'gemini:antigravity'
 $CLI_DIR           = Join-Path $env:USERPROFILE '.gemini\antigravity-cli'
 $PROFILES_DIR      = Join-Path $env:USERPROFILE '.gemini\agy-profiles'
 $ACTIVE_FILE       = Join-Path $PROFILES_DIR '_active.txt'
-# File gắn với tài khoản, được backup/restore theo từng profile
+# Account-bound files, backed up/restored per profile
 $PER_PROFILE_FILES = @('cache\default_project_id.txt')
 
 Add-Type -AssemblyName System.Security
 
-# ─── P/Invoke: Windows Credential Manager ────────────────────────────────────
+# --- P/Invoke: Windows Credential Manager ------------------------------------
 if (-not ('CredMan' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -122,12 +122,12 @@ public static class CredMan {
 '@
 }
 
-# ─── Helper ──────────────────────────────────────────────────────────────────
+# --- Helpers -----------------------------------------------------------------
 
 function Test-ProfileName([string]$n) {
-    if (-not $n) { throw "Thiếu tên profile. Dùng: agy-profile $Command <tên>" }
+    if (-not $n) { throw "Missing profile name. Usage: agy-profile $Command <name>" }
     if ($n -notmatch '^[a-zA-Z0-9_-]+$') {
-        throw "Tên profile chỉ được chứa chữ không dấu, số, '-' và '_'."
+        throw "Profile names may only contain letters, digits, '-' and '_'."
     }
 }
 
@@ -142,7 +142,7 @@ function Get-BlobHash([byte[]]$bytes) {
 
 function Get-CurrentCred { [CredMan]::Read($CRED_TARGET) }
 
-# Profile người dùng đặt tên (bỏ qua thư mục _unsaved-*, _active.txt...)
+# User-named profiles (skips _unsaved-* folders, _active.txt, ...)
 function Get-SavedProfiles {
     if (-not (Test-Path $PROFILES_DIR)) { return @() }
     @(Get-ChildItem $PROFILES_DIR -Directory |
@@ -171,7 +171,7 @@ function Unprotect-FromFile([string]$path) {
     try {
         $plain = [Security.Cryptography.ProtectedData]::Unprotect($enc, $null, 'CurrentUser')
     } catch {
-        throw "Không giải mã được '$path'. File DPAPI chỉ dùng được bởi đúng user Windows đã tạo ra nó."
+        throw "Could not decrypt '$path'. DPAPI files can only be used by the same Windows user that created them."
     }
     [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
 }
@@ -185,7 +185,7 @@ function Write-ProfileMeta([string]$dir, [string]$profileName, $cred) {
     } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $dir 'meta.json')
 }
 
-# Nếu credential hiện tại chưa khớp profile nào đã lưu (kể cả _unsaved-*) → tự backup
+# If the current credential matches no saved profile (incl. _unsaved-*), back it up
 function Backup-IfUnsaved($cred) {
     if ($null -eq $cred) { return }
     $hash = Get-BlobHash $cred.Blob
@@ -199,8 +199,8 @@ function Backup-IfUnsaved($cred) {
     New-Item -ItemType Directory -Force $dir | Out-Null
     Protect-ToFile $cred (Join-Path $dir 'credential.dpapi')
     Write-ProfileMeta $dir "_unsaved-$ts" $cred
-    Write-Warning "Tài khoản đang đăng nhập chưa được save — đã tự backup vào: $dir"
-    Write-Warning "Khôi phục lại bằng cách đổi tên thư mục đó (bỏ tiền tố '_') rồi: agy-profile switch <tên>"
+    Write-Warning "The logged-in account was never saved - backed it up to: $dir"
+    Write-Warning "To restore it, rename that folder (drop the '_' prefix), then run: agy-profile switch <name>"
 }
 
 function Confirm-Action([string]$question) {
@@ -209,18 +209,18 @@ function Confirm-Action([string]$question) {
     return ($ans -match '^[yY]')
 }
 
-# ─── Lệnh ────────────────────────────────────────────────────────────────────
+# --- Commands ----------------------------------------------------------------
 
 function Invoke-Save {
     Test-ProfileName $Name
     $cred = Get-CurrentCred
     if ($null -eq $cred -or $cred.Blob.Length -eq 0) {
-        throw "Không tìm thấy credential '$CRED_TARGET'. Hãy đăng nhập agy trước, rồi mới save."
+        throw "Credential '$CRED_TARGET' not found. Log in with agy first, then save."
     }
     $dir = Get-ProfileDir $Name
     if (Test-Path (Join-Path $dir 'credential.dpapi')) {
-        if (-not (Confirm-Action "Profile '$Name' đã tồn tại. Ghi đè?")) {
-            Write-Host 'Đã hủy.'; return
+        if (-not (Confirm-Action "Profile '$Name' already exists. Overwrite?")) {
+            Write-Host 'Cancelled.'; return
         }
     }
     New-Item -ItemType Directory -Force $dir | Out-Null
@@ -235,7 +235,7 @@ function Invoke-Save {
     }
     Write-ProfileMeta $dir $Name $cred
     Set-Content -Encoding ASCII $ACTIVE_FILE $Name
-    Write-Host "Đã lưu tài khoản hiện tại thành profile '$Name'." -ForegroundColor Green
+    Write-Host "Saved the current account as profile '$Name'." -ForegroundColor Green
 }
 
 function Invoke-Switch {
@@ -244,20 +244,20 @@ function Invoke-Switch {
     $dir      = Get-ProfileDir $TargetName
     $credFile = Join-Path $dir 'credential.dpapi'
     if (-not (Test-Path $credFile)) {
-        throw "Profile '$TargetName' không tồn tại. Xem danh sách: agy-profile list"
+        throw "Profile '$TargetName' does not exist. See: agy-profile list"
     }
 
     if (-not $Force) {
         $proc = @(Get-Process -Name agy -ErrorAction SilentlyContinue)
         if ($proc.Count -gt 0) {
-            throw "agy đang chạy (PID: $(($proc | ForEach-Object Id) -join ', ')). Đóng agy trước khi switch, hoặc thêm -Force."
+            throw "agy is running (PID: $(($proc | ForEach-Object Id) -join ', ')). Close agy before switching, or add -Force."
         }
     }
 
     $target  = Read-ProfileMeta $dir
     $current = Get-CurrentCred
     if ($current -and $target -and (Get-BlobHash $current.Blob) -eq $target.blobSha256 -and -not $Force) {
-        Write-Host "Đang ở profile '$TargetName' rồi — không cần chuyển."
+        Write-Host "Already on profile '$TargetName' - nothing to do."
         Set-Content -Encoding ASCII $ACTIVE_FILE $TargetName
         return
     }
@@ -275,16 +275,16 @@ function Invoke-Switch {
             New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
             Copy-Item $src $dst -Force
         } elseif (Test-Path $dst) {
-            Remove-Item $dst -Force   # tránh dùng nhầm project id của tài khoản khác
+            Remove-Item $dst -Force   # avoid reusing another account's project id
         }
     }
 
     Set-Content -Encoding ASCII $ACTIVE_FILE $TargetName
     $who = if ($data.userName) { " ($($data.userName))" } else { '' }
-    Write-Host "Đã chuyển sang profile '$TargetName'$who." -ForegroundColor Green
+    Write-Host "Switched to profile '$TargetName'$who." -ForegroundColor Green
 }
 
-# Tên profile đang active: ưu tiên so hash credential thực tế, fallback _active.txt
+# Active profile name: prefer matching the real credential hash, fall back to _active.txt
 function Get-ActiveProfileName {
     $cred = Get-CurrentCred
     if ($cred) {
@@ -301,54 +301,54 @@ function Get-ActiveProfileName {
 function Invoke-Next {
     $profiles = @(Get-SavedProfiles | Sort-Object Name)
     if ($profiles.Count -eq 0) {
-        throw "Chưa có profile nào. Lưu tài khoản đang đăng nhập bằng: agy-profile save <tên>"
+        throw "No profiles yet. Save the current account with: agy-profile save <name>"
     }
     $names   = @($profiles | ForEach-Object Name)
     $idx     = [array]::IndexOf($names, [string](Get-ActiveProfileName))
-    $nextIdx = ($idx + 1) % $names.Count           # idx = -1 (không rõ active) → về profile đầu
-    Write-Host "next → '$($names[$nextIdx])' ($($nextIdx + 1)/$($names.Count) theo thứ tự A-Z)"
+    $nextIdx = ($idx + 1) % $names.Count           # idx = -1 (active unknown) -> first profile
+    Write-Host "next -> '$($names[$nextIdx])' ($($nextIdx + 1)/$($names.Count) in A-Z order)"
     Invoke-Switch $names[$nextIdx]
 }
 
 function Invoke-Random {
     $profiles = @(Get-SavedProfiles | Sort-Object Name)
     if ($profiles.Count -eq 0) {
-        throw "Chưa có profile nào. Lưu tài khoản đang đăng nhập bằng: agy-profile save <tên>"
+        throw "No profiles yet. Save the current account with: agy-profile save <name>"
     }
     $active     = Get-ActiveProfileName
     $candidates = @($profiles | Where-Object { $_.Name -ne $active })
     if ($candidates.Count -eq 0) {
-        Write-Host "Chỉ có duy nhất profile '$active' — không có profile khác để chuyển ngẫu nhiên."
+        Write-Host "Only one profile ('$active') exists - no other profile to switch to."
         return
     }
     $pick = ($candidates | Get-Random).Name
-    Write-Host "random → '$pick' (chọn từ $($candidates.Count) profile khác profile hiện tại)"
+    Write-Host "random -> '$pick' (picked from $($candidates.Count) profiles other than the current one)"
     Invoke-Switch $pick
 }
 
 function Invoke-List {
     $profiles = Get-SavedProfiles
     if ($profiles.Count -eq 0) {
-        Write-Host "Chưa có profile nào. Lưu tài khoản đang đăng nhập bằng: agy-profile save <tên>"
+        Write-Host "No profiles yet. Save the current account with: agy-profile save <name>"
         return
     }
     $cred    = Get-CurrentCred
     $curHash = if ($cred) { Get-BlobHash $cred.Blob } else { $null }
-    Write-Host "Profile đã lưu ('*' = trùng tài khoản đang đăng nhập):"
+    Write-Host "Saved profiles ('*' = matches the logged-in account):"
     foreach ($p in $profiles) {
         $meta = Read-ProfileMeta $p.FullName
         $mark = if ($meta -and $meta.blobSha256 -eq $curHash) { '*' } else { ' ' }
         "  {0} {1,-20} {2}" -f $mark, $p.Name, $meta.savedAt
     }
     if (-not $cred) {
-        Write-Warning "Hiện chưa đăng nhập tài khoản nào (credential '$CRED_TARGET' không tồn tại)."
+        Write-Warning "Not logged in to any account (credential '$CRED_TARGET' does not exist)."
     }
 }
 
 function Invoke-Current {
     $cred = Get-CurrentCred
     if (-not $cred) {
-        Write-Host "Chưa đăng nhập (không có credential '$CRED_TARGET')."
+        Write-Host "Not logged in (credential '$CRED_TARGET' does not exist)."
         return
     }
     $hash  = Get-BlobHash $cred.Blob
@@ -358,68 +358,68 @@ function Invoke-Current {
         if ($meta -and $meta.blobSha256 -eq $hash) { $match = $meta; break }
     }
     if ($match) {
-        Write-Host "Profile đang active: $($match.name)" -ForegroundColor Green
+        Write-Host "Active profile: $($match.name)" -ForegroundColor Green
     } else {
-        $active = if (Test-Path $ACTIVE_FILE) { (Get-Content $ACTIVE_FILE).Trim() } else { '(chưa ghi nhận)' }
-        Write-Warning "Đang đăng nhập một tài khoản CHƯA khớp profile nào đã lưu (lần switch cuối: $active)."
-        Write-Warning "Nếu đây là tài khoản mới hoặc token vừa được refresh, hãy chạy: agy-profile save <tên>"
+        $active = if (Test-Path $ACTIVE_FILE) { (Get-Content $ACTIVE_FILE).Trim() } else { '(not recorded)' }
+        Write-Warning "The logged-in account matches NO saved profile (last switch: $active)."
+        Write-Warning "If this is a new account or the token was refreshed, run: agy-profile save <name>"
     }
 }
 
 function Invoke-Delete {
     Test-ProfileName $Name
     $dir = Get-ProfileDir $Name
-    if (-not (Test-Path $dir)) { throw "Profile '$Name' không tồn tại." }
-    if (-not (Confirm-Action "Xóa bản lưu của profile '$Name'? (tài khoản đang đăng nhập không bị ảnh hưởng)")) {
-        Write-Host 'Đã hủy.'; return
+    if (-not (Test-Path $dir)) { throw "Profile '$Name' does not exist." }
+    if (-not (Confirm-Action "Delete the saved copy of profile '$Name'? (the logged-in account is not affected)")) {
+        Write-Host 'Cancelled.'; return
     }
     Remove-Item $dir -Recurse -Force
     if ((Test-Path $ACTIVE_FILE) -and ((Get-Content $ACTIVE_FILE).Trim() -eq $Name)) {
         Remove-Item $ACTIVE_FILE -Force
     }
-    Write-Host "Đã xóa profile '$Name'." -ForegroundColor Green
+    Write-Host "Deleted profile '$Name'." -ForegroundColor Green
 }
 
 function Invoke-Logout {
     $cred = Get-CurrentCred
-    if (-not $cred) { Write-Host 'Không có credential nào để xóa.'; return }
-    if (-not (Confirm-Action "Xóa credential hiện tại? Lần chạy agy tới sẽ phải đăng nhập lại.")) {
-        Write-Host 'Đã hủy.'; return
+    if (-not $cred) { Write-Host 'No credential to delete.'; return }
+    if (-not (Confirm-Action "Delete the current credential? The next agy run will require logging in again.")) {
+        Write-Host 'Cancelled.'; return
     }
     Backup-IfUnsaved $cred
     [CredMan]::Delete($CRED_TARGET) | Out-Null
     if (Test-Path $ACTIVE_FILE) { Remove-Item $ACTIVE_FILE -Force }
-    Write-Host "Đã đăng xuất. Chạy 'agy' để đăng nhập tài khoản khác, rồi 'agy-profile save <tên>' để lưu." -ForegroundColor Green
+    Write-Host "Logged out. Run 'agy' to log in with another account, then 'agy-profile save <name>' to save it." -ForegroundColor Green
 }
 
 function Invoke-Help {
     Write-Host @"
-agy-profile - Quản lý tài khoản (profile) cho Antigravity CLI
+agy-profile - Account (profile) manager for the Antigravity CLI
 
-Cách dùng:  agy-profile <lệnh> [tên] [-Force]
+Usage:  agy-profile <command> [name] [-Force]
 
-  save <tên>      Lưu tài khoản đang đăng nhập thành profile <tên>
-  switch <tên>    Chuyển sang tài khoản của profile <tên>
-  next            Chuyển sang profile kế tiếp (vòng tròn, theo thứ tự A-Z)
-  random          Chuyển ngẫu nhiên sang một profile khác profile hiện tại
-  list            Liệt kê profile đã lưu
-  current         Cho biết đang ở profile nào
-  delete <tên>    Xóa bản lưu của một profile
-  logout          Đăng xuất (xóa credential hiện tại, có tự backup nếu chưa save)
-  help            Hướng dẫn này
+  save <name>     Save the logged-in account as profile <name>
+  switch <name>   Switch to the account of profile <name>
+  next            Switch to the next profile (round-robin, A-Z order)
+  random          Switch to a random profile other than the current one
+  list            List saved profiles
+  current         Show which profile is active
+  delete <name>   Delete the saved copy of a profile
+  logout          Log out (deletes the credential; auto-backup if unsaved)
+  help            Show this help
 
-  -Force          Bỏ qua xác nhận và kiểm tra agy đang chạy
+  -Force          Skip confirmations and the running-agy check
 
-Thiết lập lần đầu với 2 tài khoản:
-  agy-profile save personal      # đang đăng nhập tài khoản 1
+First-time setup with 2 accounts:
+  agy-profile save personal      # account 1 is currently logged in
   agy-profile logout
-  agy                            # đăng nhập tài khoản 2 trong agy
+  agy                            # log in with account 2 inside agy
   agy-profile save work
-  agy-profile switch personal    # từ nay chuyển qua lại chỉ 1 lệnh
+  agy-profile switch personal    # from now on, switching is one command
 "@
 }
 
-# ─── Dispatch ────────────────────────────────────────────────────────────────
+# --- Dispatch ----------------------------------------------------------------
 
 try {
     New-Item -ItemType Directory -Force $PROFILES_DIR | Out-Null
@@ -433,9 +433,9 @@ try {
         'delete'  { Invoke-Delete }
         'logout'  { Invoke-Logout }
         'help'    { Invoke-Help }
-        default   { Write-Host "Lệnh không hợp lệ: '$Command'`n"; Invoke-Help; exit 1 }
+        default   { Write-Host "Unknown command: '$Command'`n"; Invoke-Help; exit 1 }
     }
 } catch {
-    Write-Host "LỖI: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }

@@ -1,17 +1,17 @@
-﻿<#
+<#
 .SYNOPSIS
-  Cài đặt / gỡ cài đặt agy-profile trên Windows.
+  Install / uninstall agy-profile on Windows.
 
 .DESCRIPTION
-  - Copy agy-profile.cmd + agy-profile.ps1 vào thư mục cài đặt
-    (mặc định: %LOCALAPPDATA%\agy-profile)
-  - Thêm thư mục đó vào PATH của user (không cần quyền Admin)
-  - Chạy lại để cập nhật phiên bản mới (ghi đè file cũ)
+  - Copies agy-profile.cmd + agy-profile.ps1 into the install directory
+    (default: %LOCALAPPDATA%\agy-profile)
+  - Adds that directory to the user's PATH (no Administrator rights needed)
+  - Run again to update to a newer version (overwrites old files)
 
 .EXAMPLE
-  .\install.cmd                        # cài đặt mặc định
-  .\install.cmd -Dir D:\tools\agyp     # cài vào thư mục tùy chọn
-  .\install.cmd -Uninstall             # gỡ cài đặt
+  .\install.cmd                        # default install
+  .\install.cmd -Dir D:\tools\agyp     # install to a custom directory
+  .\install.cmd -Uninstall             # uninstall
 #>
 [CmdletBinding()]
 param(
@@ -33,64 +33,64 @@ function Set-UserPath([string[]]$parts) {
 
 try {
     if ($Uninstall) {
-        # ── Gỡ cài đặt ──
+        # --- Uninstall ---
         if (Test-Path $Dir) {
             Remove-Item $Dir -Recurse -Force
-            Write-Host "Đã xóa thư mục: $Dir" -ForegroundColor Green
+            Write-Host "Removed directory: $Dir" -ForegroundColor Green
         } else {
-            Write-Host "Thư mục $Dir không tồn tại — bỏ qua."
+            Write-Host "Directory $Dir does not exist - skipping."
         }
         $parts = Get-UserPathParts
         if ($parts -contains $Dir) {
             Set-UserPath ($parts | Where-Object { $_ -ne $Dir })
-            Write-Host "Đã gỡ '$Dir' khỏi PATH của user." -ForegroundColor Green
+            Write-Host "Removed '$Dir' from the user PATH." -ForegroundColor Green
         }
         Write-Host ''
-        Write-Host 'Đã gỡ cài đặt agy-profile.'
-        Write-Host 'Lưu ý: các profile đã lưu tại %USERPROFILE%\.gemini\agy-profiles KHÔNG bị xóa.'
-        Write-Host 'Nếu không cần nữa, xóa tay thư mục đó (sẽ mất các tài khoản đã save).'
+        Write-Host 'agy-profile has been uninstalled.'
+        Write-Host 'Note: saved profiles under %USERPROFILE%\.gemini\agy-profiles are NOT deleted.'
+        Write-Host 'If you no longer need them, delete that folder manually (saved accounts will be lost).'
         exit 0
     }
 
-    # ── Cài đặt ──
-    # 1. Kiểm tra file nguồn nằm cạnh installer
+    # --- Install ---
+    # 1. Verify source files sit next to the installer
     foreach ($f in $FILES) {
         if (-not (Test-Path (Join-Path $PSScriptRoot $f))) {
-            throw "Không tìm thấy '$f' cạnh installer. Hãy chạy install.cmd từ thư mục repo đã clone/giải nén đầy đủ."
+            throw "'$f' not found next to the installer. Run install.cmd from the fully cloned/extracted repo folder."
         }
     }
 
-    # 2. Copy file vào thư mục cài đặt
+    # 2. Copy files into the install directory
     New-Item -ItemType Directory -Force $Dir | Out-Null
     foreach ($f in $FILES) {
         Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $Dir $f) -Force
     }
-    Write-Host "Đã copy $($FILES.Count) file vào: $Dir" -ForegroundColor Green
+    Write-Host "Copied $($FILES.Count) files to: $Dir" -ForegroundColor Green
 
-    # 3. Thêm vào PATH của user nếu chưa có
+    # 3. Add to the user PATH if not already present
     $parts = Get-UserPathParts
     if ($parts -notcontains $Dir) {
         Set-UserPath ($parts + $Dir)
-        Write-Host "Đã thêm '$Dir' vào PATH của user." -ForegroundColor Green
+        Write-Host "Added '$Dir' to the user PATH." -ForegroundColor Green
     } else {
-        Write-Host "PATH đã chứa '$Dir' — bỏ qua bước thêm PATH."
+        Write-Host "PATH already contains '$Dir' - skipping the PATH step."
     }
-    # Cho phiên hiện tại dùng được ngay, không cần mở terminal mới
+    # Make it usable in the current session without opening a new terminal
     if (($env:Path -split ';') -notcontains $Dir) { $env:Path += ";$Dir" }
 
-    # 4. Kiểm tra môi trường
+    # 4. Environment check
     if (-not (Get-Command agy -ErrorAction SilentlyContinue)) {
-        Write-Warning "Không tìm thấy 'agy' trong PATH. agy-profile cần Antigravity CLI đã được cài đặt."
+        Write-Warning "'agy' was not found in PATH. agy-profile requires the Antigravity CLI to be installed."
     }
 
     Write-Host ''
-    Write-Host 'Cài đặt hoàn tất!' -ForegroundColor Green
-    Write-Host 'Mở terminal MỚI (để nạp PATH) rồi thử:'
+    Write-Host 'Installation complete!' -ForegroundColor Green
+    Write-Host 'Open a NEW terminal (to reload PATH) and try:'
     Write-Host ''
     Write-Host '    agy-profile help'
     Write-Host ''
-    Write-Host 'Thiết lập profile đầu tiên:  agy-profile save <tên>'
+    Write-Host 'Set up your first profile with:  agy-profile save <name>'
 } catch {
-    Write-Host "LỖI: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }

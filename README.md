@@ -1,35 +1,36 @@
 # agy-profile
 
-> **Switch between Google accounts for the Antigravity CLI (`agy`) on Windows with a single command.**
-> Công cụ chuyển đổi nhanh tài khoản đăng nhập cho Antigravity CLI trên Windows.
+[English](README.md) | [Tiếng Việt](README.vn.md)
 
-`agy` không hỗ trợ nhiều profile — muốn đổi tài khoản phải logout/login thủ công mỗi lần.
-`agy-profile` giải quyết việc đó: **lưu tài khoản một lần, chuyển đổi bằng một lệnh**,
-trong khi settings, trustedWorkspaces, knowledge, skills, MCP config... vẫn dùng chung.
+> **Switch between Google accounts for the Antigravity CLI (`agy`) on Windows with a single command.**
+
+The `agy` CLI has no multi-profile support — changing accounts means logging out and back in
+by hand every time. `agy-profile` fixes that: **save an account once, switch with one command**,
+while settings, trustedWorkspaces, knowledge, skills, MCP config... all stay shared.
 
 ```cmd
-agy-profile save personal      # lưu tài khoản đang đăng nhập
-agy-profile switch work        # đổi sang tài khoản khác ngay lập tức
+agy-profile save personal      # save the currently logged-in account
+agy-profile switch work        # switch to another account instantly
 ```
 
-## Nguyên lý hoạt động
+## How it works
 
-Token đăng nhập của `agy` không nằm trong file cấu hình mà nằm trong
-**Windows Credential Manager** (mục `gemini:antigravity`). `agy-profile` đọc/ghi
-credential đó qua Win32 API, lưu mỗi profile thành một bản sao **mã hóa DPAPI** tại
-`%USERPROFILE%\.gemini\agy-profiles\<tên>\`. Chuyển profile = swap đúng 1 credential —
-không copy thư mục, không đụng vào dữ liệu nào khác.
+The `agy` login token is not stored in a config file — it lives in
+**Windows Credential Manager** (entry `gemini:antigravity`). `agy-profile` reads/writes
+that credential through the Win32 API and stores each profile as a **DPAPI-encrypted**
+copy under `%USERPROFILE%\.gemini\agy-profiles\<name>\`. Switching profiles swaps exactly
+one credential — no folder copying, and nothing else is touched.
 
-Chi tiết kiến trúc và các quyết định thiết kế: xem [DESIGN.md](DESIGN.md).
+Architecture details and design decisions: see [DESIGN.md](DESIGN.md).
 
-## Yêu cầu
+## Requirements
 
 - Windows 10/11
-- Windows PowerShell 5.1 (có sẵn trong Windows) hoặc PowerShell 7+
-- [Antigravity CLI](https://antigravity.google/) (`agy`) đã cài đặt
-- **Không cần quyền Administrator**
+- Windows PowerShell 5.1 (built into Windows) or PowerShell 7+
+- [Antigravity CLI](https://antigravity.google/) (`agy`) installed
+- **No Administrator rights needed**
 
-## Cài đặt
+## Installation
 
 ```powershell
 git clone https://github.com/<your-username>/agy-profile.git
@@ -37,115 +38,118 @@ cd agy-profile
 .\install.cmd
 ```
 
-Installer sẽ copy tool vào `%LOCALAPPDATA%\agy-profile` và thêm vào `PATH` của user.
-Mở terminal **mới** rồi kiểm tra:
+The installer copies the tool to `%LOCALAPPDATA%\agy-profile` and adds it to the user `PATH`.
+Open a **new** terminal and verify:
 
 ```
 agy-profile help
 ```
 
-Tùy chọn khác:
+Other options:
 
 ```powershell
-.\install.cmd -Dir D:\tools\agy-profile   # cài vào thư mục tùy chọn
-.\install.cmd -Uninstall                  # gỡ cài đặt (giữ nguyên các profile đã lưu)
+.\install.cmd -Dir D:\tools\agy-profile   # install to a custom directory
+.\install.cmd -Uninstall                  # uninstall (saved profiles are kept)
 ```
 
-**Cập nhật phiên bản mới:** `git pull` rồi chạy lại `.\install.cmd`.
+**Updating:** `git pull`, then run `.\install.cmd` again.
 
 <details>
-<summary>Cài đặt thủ công (không dùng installer)</summary>
+<summary>Manual installation (without the installer)</summary>
 
-Copy 2 file `agy-profile.cmd` + `agy-profile.ps1` vào bất kỳ thư mục nào có trong
-`PATH` (2 file phải nằm cùng chỗ). Ví dụ nhanh nhất là `%LOCALAPPDATA%\agy\bin`
-(thư mục của chính `agy`, đã có sẵn trong PATH) — nhưng lưu ý `agy update` có thể
-dọn thư mục này trong tương lai.
+Copy the two files `agy-profile.cmd` + `agy-profile.ps1` into any directory on your
+`PATH` (both files must sit in the same folder). The quickest choice is
+`%LOCALAPPDATA%\agy\bin` (agy's own folder, already on PATH) — but note that
+`agy update` may clean that folder in the future.
 </details>
 
-## Bắt đầu sử dụng (ví dụ 2 tài khoản)
+## Getting started (example with 2 accounts)
 
 ```cmd
-:: Đang đăng nhập tài khoản cá nhân trong agy
+:: The personal account is currently logged in inside agy
 agy-profile save personal
 
-:: Đăng xuất, rồi đăng nhập tài khoản công việc
+:: Log out, then log in with the work account
 agy-profile logout
-agy                          &:: agy sẽ yêu cầu đăng nhập → dùng tài khoản công việc
+agy                          &:: agy will ask you to log in -> use the work account
 agy-profile save work
 
-:: Từ nay chuyển qua lại chỉ cần 1 lệnh
+:: From now on, switching takes one command
 agy-profile switch personal
 agy-profile switch work
 
-:: Hoặc xoay vòng / ngẫu nhiên khi có nhiều profile
+:: Or rotate / randomize across many profiles
 agy-profile next
 agy-profile random
 ```
 
-## Các lệnh
+## Commands
 
-| Lệnh | Chức năng |
+| Command | Description |
 |---|---|
-| `agy-profile save <tên>` | Lưu tài khoản đang đăng nhập thành profile `<tên>` |
-| `agy-profile switch <tên>` | Chuyển sang tài khoản của profile `<tên>` |
-| `agy-profile next` | Chuyển sang profile **kế tiếp** (vòng tròn, theo thứ tự A-Z) |
-| `agy-profile random` | Chuyển **ngẫu nhiên** sang một profile khác profile hiện tại |
-| `agy-profile list` | Liệt kê profile; dấu `*` = trùng tài khoản đang đăng nhập |
-| `agy-profile current` | Cho biết đang ở profile nào; cảnh báo nếu tài khoản hiện tại chưa được lưu |
-| `agy-profile delete <tên>` | Xóa bản lưu của profile (không ảnh hưởng tài khoản đang đăng nhập) |
-| `agy-profile logout` | Đăng xuất — lần chạy `agy` tới sẽ yêu cầu đăng nhập lại |
-| `agy-profile help` | Hướng dẫn |
-| Cờ `-Force` | Bỏ qua câu hỏi xác nhận và kiểm tra `agy` đang chạy |
+| `agy-profile save <name>` | Save the logged-in account as profile `<name>` |
+| `agy-profile switch <name>` | Switch to the account of profile `<name>` |
+| `agy-profile next` | Switch to the **next** profile (round-robin, A-Z order) |
+| `agy-profile random` | Switch to a **random** profile other than the current one |
+| `agy-profile list` | List profiles; `*` = matches the logged-in account |
+| `agy-profile current` | Show the active profile; warns if the current account was never saved |
+| `agy-profile delete <name>` | Delete a saved profile (the logged-in account is not affected) |
+| `agy-profile logout` | Log out — the next `agy` run will ask you to log in again |
+| `agy-profile help` | Show help |
+| `-Force` flag | Skip confirmations and the running-`agy` check |
 
-Tên profile chỉ được chứa chữ không dấu, số, `-` và `_`.
+Profile names may only contain letters, digits, `-` and `_`.
 
-## Cơ chế an toàn tích hợp sẵn
+## Built-in safety mechanisms
 
-- **Mã hóa DPAPI**: file `credential.dpapi` chỉ giải mã được bởi đúng user Windows trên
-  đúng máy đã tạo ra nó — copy sang máy/user khác là vô dụng. Không có token dạng
-  văn bản thuần nào được ghi ra đĩa.
-- **Chống mất tài khoản**: nếu `switch`/`logout` khi đang đăng nhập một tài khoản
-  **chưa save**, script tự backup nó vào `_unsaved-<thời gian>\` trước khi ghi đè.
-  Khôi phục: đổi tên thư mục đó (bỏ tiền tố `_`) rồi `agy-profile switch <tên mới>`.
-- **Chặn switch khi `agy` đang chạy**: tránh việc agy refresh token đè lên profile
-  khác giữa chừng. Dùng `-Force` nếu chắc chắn muốn bỏ qua.
-- **Phát hiện lệch trạng thái**: `current`/`list` so sánh hash SHA-256 của credential
-  thực tế với bản lưu — nếu bạn login tay ngoài script, sẽ có cảnh báo nhắc `save` lại.
+- **DPAPI encryption**: `credential.dpapi` files can only be decrypted by the same
+  Windows user on the same machine that created them — copying them elsewhere is
+  useless. No plaintext token is ever written to disk.
+- **Account-loss protection**: if you `switch`/`logout` while logged in with an
+  account that was **never saved**, the script backs it up to `_unsaved-<timestamp>\`
+  before overwriting. To restore: rename that folder (drop the `_` prefix), then
+  `agy-profile switch <new-name>`.
+- **Blocked while `agy` is running**: prevents agy from refreshing a token over
+  another profile mid-switch. Use `-Force` if you are sure you want to bypass.
+- **State-drift detection**: `current`/`list` compare the SHA-256 hash of the real
+  credential against saved copies — if you logged in manually outside the script,
+  you get a warning telling you to `save` again.
 
-## Câu hỏi thường gặp
+## FAQ
 
-**`current` cảnh báo "CHƯA khớp profile nào" dù tôi không đổi tài khoản?**
-`agy` có thể đã tự refresh token (nội dung credential thay đổi → hash thay đổi).
-Chạy `agy-profile save <tên đang dùng> -Force` để cập nhật bản lưu.
+**`current` warns "matches NO saved profile" even though I did not change accounts?**
+`agy` may have refreshed the token on its own (credential contents changed → hash changed).
+Run `agy-profile save <current-name> -Force` to update the saved copy.
 
-**Lịch sử hội thoại có tách theo profile không?**
-Không — theo thiết kế, dữ liệu hội thoại/knowledge dùng chung giữa các profile.
-Hội thoại của tài khoản khác vẫn hiện trong danh sách nhưng server sẽ không cho
-resume nếu không thuộc tài khoản đang đăng nhập. Muốn tách riêng: xem mục 5.3
-trong [DESIGN.md](DESIGN.md).
+**Is conversation history separated per profile?**
+No — by design, conversation/knowledge data is shared across profiles.
+Conversations from another account still show up in the list, but the server will
+refuse to resume them unless they belong to the logged-in account. To separate them:
+see section 5.3 in [DESIGN.md](DESIGN.md).
 
-**Có dùng được cho Antigravity IDE không?**
-Không. Tool này chỉ quản lý đăng nhập của **CLI** (`agy.exe`). IDE lưu trạng thái riêng.
+**Does this work for the Antigravity IDE?**
+No. This tool only manages the **CLI** (`agy.exe`) login. The IDE keeps its own state.
 
-**Version mới của `agy` đổi cách lưu token thì sao?**
-Cred target là hằng số ở đầu `agy-profile.ps1` (`$CRED_TARGET`) — nếu Google đổi tên
-mục credential, chỉ cần sửa 1 dòng. Lệnh `current` sẽ là nơi phát hiện sớm
-("không tìm thấy credential").
+**What if a new `agy` version changes how the token is stored?**
+The credential target is a constant at the top of `agy-profile.ps1` (`$CRED_TARGET`) —
+if Google renames the credential entry, it is a one-line fix. The `current` command is
+where you would notice first ("credential not found").
 
-## Cấu trúc repo
+## Repository layout
 
 ```
 agy-profile/
-├── agy-profile.cmd   # entry point — gõ `agy-profile ...` từ CMD/PowerShell
-├── agy-profile.ps1   # toàn bộ logic (CredRead/CredWrite, DPAPI, hash-guard)
-├── install.cmd       # installer — copy vào %LOCALAPPDATA%\agy-profile + thêm PATH
-├── install.ps1       # logic của installer (hỗ trợ -Dir, -Uninstall)
-├── DESIGN.md         # tài liệu thiết kế & khảo sát cơ chế lưu trữ của agy
-└── README.md
+├── agy-profile.cmd   # entry point — run `agy-profile ...` from CMD/PowerShell
+├── agy-profile.ps1   # all the logic (CredRead/CredWrite, DPAPI, hash guard)
+├── install.cmd       # installer — copies to %LOCALAPPDATA%\agy-profile + PATH
+├── install.ps1       # installer logic (supports -Dir, -Uninstall)
+├── DESIGN.md         # design doc & investigation of agy's storage mechanism
+├── README.md         # this file (English)
+└── README.vn.md      # Vietnamese README
 ```
 
-## Miễn trừ trách nhiệm
+## Disclaimer
 
-Dự án cá nhân, không liên kết với Google. Cơ chế lưu credential của Antigravity CLI
-có thể thay đổi ở các phiên bản sau. Đã kiểm thử trên Windows 11 + Windows PowerShell 5.1
-(07/2026). Sử dụng với tài khoản của chính bạn.
+Personal project, not affiliated with Google. The Antigravity CLI's credential storage
+mechanism may change in future versions. Tested on Windows 11 + Windows PowerShell 5.1
+(July 2026). Use with your own accounts only.
