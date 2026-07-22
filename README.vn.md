@@ -38,8 +38,26 @@ cd agy-profile
 .\install.cmd
 ```
 
-Installer sẽ copy tool vào `%LOCALAPPDATA%\agy-profile` và thêm vào `PATH` của user.
-Mở terminal **mới** rồi kiểm tra:
+Installer sẽ copy tool vào `%LOCALAPPDATA%\agy-profile` và hỏi bạn muốn thiết lập cho
+shell nào:
+
+```
+Which shells should agy-profile be set up for?
+  [1] CMD
+  [2] PowerShell
+  [3] Git Bash (detected)
+Enter numbers separated by commas, or press Enter for all detected shells
+```
+
+- **CMD / PowerShell** dùng chung `PATH` của user trên Windows — chọn 1 trong 2 là đủ để
+  thêm thư mục cài đặt vào đó.
+- **Git Bash** cần thêm một bước: bash không tự nhận diện tên lệnh trần thành file `.cmd`,
+  nên installer còn tạo thêm 1 shim POSIX nhỏ (`agy-profile`, không đuôi file) cạnh file
+  `.cmd`, và thêm khối PATH được quản lý vào `~/.bashrc` (và `~/.bash_profile`, để hoạt
+  động cả ở chế độ login-shell mặc định của Git Bash). Nội dung dotfile sẵn có của bạn
+  luôn được giữ nguyên.
+
+Mở terminal **mới** đúng loại shell bạn vừa chọn rồi kiểm tra:
 
 ```
 agy-profile help
@@ -48,11 +66,13 @@ agy-profile help
 Tùy chọn khác:
 
 ```powershell
-.\install.cmd -Dir D:\tools\agy-profile   # cài vào thư mục tùy chọn
-.\install.cmd -Uninstall                  # gỡ cài đặt (giữ nguyên các profile đã lưu)
+.\install.cmd -Shells cmd,powershell,bash  # bỏ qua câu hỏi (chạy không tương tác)
+.\install.cmd -Dir D:\tools\agy-profile    # cài vào thư mục tùy chọn
+.\install.cmd -Uninstall                   # gỡ cài đặt (giữ nguyên các profile đã lưu)
 ```
 
-**Cập nhật phiên bản mới:** `git pull` rồi chạy lại `.\install.cmd`.
+**Cập nhật phiên bản mới:** `git pull` rồi chạy lại `.\install.cmd` — installer tự dùng
+lại lựa chọn shell trước đó, không hỏi lại (thêm `-Shells` nếu muốn đổi).
 
 <details>
 <summary>Cài đặt thủ công (không dùng installer)</summary>
@@ -155,6 +175,13 @@ trong [DESIGN.md](DESIGN.md) để biết cấu trúc mã hóa chi tiết.
 **Có dùng được cho Antigravity IDE không?**
 Không. Tool này chỉ quản lý đăng nhập của **CLI** (`agy.exe`). IDE lưu trạng thái riêng.
 
+**Thiết lập cho Git Bash có dùng được với WSL không?**
+Installer nhắm cụ thể vào Git Bash (ghi vào `%USERPROFILE%\.bashrc` / `.bash_profile`,
+WSL không đọc các file này vì WSL có `$HOME` riêng biệt). Nếu dùng WSL, tự thêm thư mục
+cài đặt vào `~/.bashrc` của WSL, ví dụ:
+`export PATH="$PATH:/mnt/c/Users/<bạn>/AppData/Local/agy-profile"`, và gọi
+`agy-profile.cmd` (có đuôi file) vì shim tên trần không được cài ở đó.
+
 **Version mới của `agy` đổi cách lưu token thì sao?**
 Cred target là hằng số ở đầu `agy-profile.ps1` (`$CRED_TARGET`) — nếu Google đổi tên
 mục credential, chỉ cần sửa 1 dòng. Lệnh `current` sẽ là nơi phát hiện sớm
@@ -166,12 +193,15 @@ mục credential, chỉ cần sửa 1 dòng. Lệnh `current` sẽ là nơi phá
 agy-profile/
 ├── agy-profile.cmd   # entry point — gõ `agy-profile ...` từ CMD/PowerShell
 ├── agy-profile.ps1   # toàn bộ logic (CredRead/CredWrite, DPAPI, hash-guard)
-├── install.cmd       # installer — copy vào %LOCALAPPDATA%\agy-profile + thêm PATH
-├── install.ps1       # logic của installer (hỗ trợ -Dir, -Uninstall)
+├── install.cmd       # installer — copy file, thiết lập shell bạn chọn
+├── install.ps1       # logic của installer (chọn shell, -Dir, -Uninstall)
 ├── DESIGN.md         # tài liệu thiết kế & khảo sát cơ chế lưu trữ của agy (tiếng Anh)
 ├── README.md         # README tiếng Anh
 └── README.vn.md      # file này (tiếng Việt)
 ```
+
+Sau khi cài với Git Bash được chọn, thư mục cài đặt còn có thêm shim `agy-profile`
+(không đuôi file) để bash tìm thấy được — xem phần "Git Bash" ở trên.
 
 ## Miễn trừ trách nhiệm
 

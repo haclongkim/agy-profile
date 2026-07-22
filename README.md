@@ -38,8 +38,26 @@ cd agy-profile
 .\install.cmd
 ```
 
-The installer copies the tool to `%LOCALAPPDATA%\agy-profile` and adds it to the user `PATH`.
-Open a **new** terminal and verify:
+The installer copies the tool to `%LOCALAPPDATA%\agy-profile` and asks which shells you want
+it set up for:
+
+```
+Which shells should agy-profile be set up for?
+  [1] CMD
+  [2] PowerShell
+  [3] Git Bash (detected)
+Enter numbers separated by commas, or press Enter for all detected shells
+```
+
+- **CMD / PowerShell** share the same Windows user `PATH` — either one adds the install
+  directory there.
+- **Git Bash** needs a bit more: bash can't resolve a bare command name to a `.cmd` file, so
+  the installer also drops a small POSIX shim (`agy-profile`, no extension) next to the
+  `.cmd` file, and adds a managed PATH block to `~/.bashrc` (and `~/.bash_profile`, so it
+  also works in Git Bash's default login-shell mode). Your own dotfile content is preserved
+  either way.
+
+Open a **new** terminal for whichever shell(s) you picked and verify:
 
 ```
 agy-profile help
@@ -48,11 +66,13 @@ agy-profile help
 Other options:
 
 ```powershell
-.\install.cmd -Dir D:\tools\agy-profile   # install to a custom directory
-.\install.cmd -Uninstall                  # uninstall (saved profiles are kept)
+.\install.cmd -Shells cmd,powershell,bash  # skip the prompt (non-interactive)
+.\install.cmd -Dir D:\tools\agy-profile    # install to a custom directory
+.\install.cmd -Uninstall                   # uninstall (saved profiles are kept)
 ```
 
-**Updating:** `git pull`, then run `.\install.cmd` again.
+**Updating:** `git pull`, then run `.\install.cmd` again — it reuses your previous shell
+selection without re-prompting (pass `-Shells` to change it).
 
 <details>
 <summary>Manual installation (without the installer)</summary>
@@ -158,6 +178,13 @@ and machine and cannot be moved. Exports use a password-derived key (PBKDF2 + AE
 **Does this work for the Antigravity IDE?**
 No. This tool only manages the **CLI** (`agy.exe`) login. The IDE keeps its own state.
 
+**Does Git Bash setup work with WSL too?**
+The installer targets Git Bash specifically (it writes to `%USERPROFILE%\.bashrc` /
+`.bash_profile`, which WSL does not read — WSL has its own separate `$HOME`). If you use
+WSL, add the install directory to WSL's own `~/.bashrc` manually, e.g.
+`export PATH="$PATH:/mnt/c/Users/<you>/AppData/Local/agy-profile"`, and call
+`agy-profile.cmd` (with the extension) since the bare-name shim isn't installed there.
+
 **What if a new `agy` version changes how the token is stored?**
 The credential target is a constant at the top of `agy-profile.ps1` (`$CRED_TARGET`) —
 if Google renames the credential entry, it is a one-line fix. The `current` command is
@@ -169,12 +196,15 @@ where you would notice first ("credential not found").
 agy-profile/
 ├── agy-profile.cmd   # entry point — run `agy-profile ...` from CMD/PowerShell
 ├── agy-profile.ps1   # all the logic (CredRead/CredWrite, DPAPI, hash guard)
-├── install.cmd       # installer — copies to %LOCALAPPDATA%\agy-profile + PATH
-├── install.ps1       # installer logic (supports -Dir, -Uninstall)
+├── install.cmd       # installer — copies files, sets up your chosen shell(s)
+├── install.ps1       # installer logic (shell selection, -Dir, -Uninstall)
 ├── DESIGN.md         # design doc & investigation of agy's storage mechanism
 ├── README.md         # this file (English)
 └── README.vn.md      # Vietnamese README
 ```
+
+After installing with Git Bash selected, the install directory also gains a bare-name
+`agy-profile` shim (no extension) so bash can find it — see the "Git Bash" callout above.
 
 ## Disclaimer
 

@@ -17,10 +17,10 @@
 │   ├── settings.json             <- theme, trustedWorkspaces        -> SHARED
 │   ├── jetski_state.pbtxt        <- onboarding, migrations (does NOT hold tokens)
 │   ├── installation_id           <- machine id                      -> SHARED
-│   ├── conversation_summaries.db <- conversation index              (see 5.4)
+│   ├── conversation_summaries.db <- conversation index              (see 5.5)
 │   ├── cache\
 │   │   ├── default_project_id.txt     <- account-bound              -> PER PROFILE
-│   │   ├── conversation_metadata.json <- conversation metadata      (see 5.4)
+│   │   ├── conversation_metadata.json <- conversation metadata      (see 5.5)
 │   │   └── onboarding.json
 │   ├── conversations\  brain\  knowledge\  builtin\skills\  ...    -> SHARED
 ├── antigravity\                  <- IDE-agent side state (NOT touched)
@@ -150,7 +150,7 @@ Centralized constants at the top of the file:
 $CRED_TARGET       = 'gemini:antigravity'
 $CLI_DIR           = "$env:USERPROFILE\.gemini\antigravity-cli"
 $PROFILES_DIR      = "$env:USERPROFILE\.gemini\agy-profiles"
-$PER_PROFILE_FILES = @('cache\default_project_id.txt')   # extensible, see 5.4
+$PER_PROFILE_FILES = @('cache\default_project_id.txt')   # extensible, see 5.5
 ```
 
 ### 5.2 Safety & correctness
@@ -204,7 +204,68 @@ Not a goal: multi-file archives, compression, or cloud sync. One password-encryp
 file per profile keeps the format simple enough to read in ~150 lines and to reason
 about without a Zip/Compression dependency.
 
-### 5.4 Open question: should conversation data be shared?
+### 5.4 Installer: shell selection (CMD / PowerShell / Git Bash)
+
+`agy-profile.cmd`/`.ps1` themselves don't care which shell invoked them, but making
+`agy-profile` typeable as a bare command differs per shell family, so the installer
+asks which ones to wire up rather than assuming.
+
+**CMD and PowerShell both read the same Windows user `PATH`** (a single registry
+value), so selecting either one triggers the exact same action — adding the install
+directory to that `PATH` via `[Environment]::SetEnvironmentVariable(..., 'User')`.
+There's no way to enable one without the other at the OS level; the installer still
+lists them separately for clarity, but internally it's one `if` branch.
+
+**Git Bash needs two separate fixes**, discovered by testing directly against a real
+Git for Windows install rather than assuming POSIX conventions apply:
+
+1. **Bash never resolves `agy-profile` to `agy-profile.cmd`.** Unlike `cmd.exe`,
+   which appends `PATHEXT` extensions automatically, bash requires an exact filename
+   match. `agy-profile.cmd help` works once the directory is on `$PATH`;
+   bare `agy-profile help` returns "command not found". Fix: write a second file,
+   `agy-profile` (no extension, LF line endings, `#!/bin/sh` shebang), that just
+   `exec`s the `.cmd` file with the same arguments:
+   ```sh
+   #!/bin/sh
+   DIR="$(cd "$(dirname "$0")" && pwd)"
+   exec "$DIR/agy-profile.cmd" "$@"
+   ```
+   Testing showed Windows-authored files (CRLF, no explicit `chmod +x`) already show
+   up as `-rwxr-xr-x` under Git Bash's MSYS permission emulation, so no `chmod` step
+   is needed from the PowerShell installer — but the shim is still written with pure
+   LF endings to also behave under WSL, where the real Linux kernel (unlike MSYS) is
+   not lenient about a trailing `\r` in a shebang line.
+
+2. **`$PATH` additions don't reach bash automatically, and *which* startup file
+   matters.** Testing `bash -i` (plain interactive) against a `~/.bashrc`-only PATH
+   export worked immediately. But Git Bash's default double-click shortcut launches
+   a **login** shell (`bash --login -i`), and login shells read `~/.bash_profile`
+   (or `~/.bash_login` / `~/.profile`) instead of `~/.bashrc` — confirmed by testing
+   `bash -l` against the same setup, which failed with "command not found" until a
+   `~/.bash_profile` that sources `~/.bashrc` was added. This exact gap is why Git
+   for Windows itself ships a first-run check that offers to create
+   `~/.bash_profile` interactively — the installer does the same thing
+   unconditionally instead of depending on the user noticing and accepting that
+   one-time prompt.
+
+Both `~/.bashrc` and `~/.bash_profile` are edited through the same idempotent,
+marker-delimited block mechanism (`# >>> agy-profile PATH (managed) >>> ... <<<`)
+used nowhere else in this tool until now — reusing it here means re-running the
+installer, or switching Git Bash off and back on across runs, never duplicates
+lines and never touches content the user put in those files themselves. This was
+verified by round-tripping install → reinstall (no duplication) → deselect bash
+(block removed, user's own lines untouched) → reselect bash (block re-added).
+
+The **selected shells are remembered** in `<install dir>\shells.txt` so `git pull`
++ re-running the installer to update doesn't re-prompt every time; passing
+`-Shells` explicitly always overrides the remembered choice.
+
+Out of scope: WSL. It has its own Linux `$HOME` that Windows-side `.bashrc`/
+`.bash_profile` edits never reach, and by default has no distribution installed
+to test against. A WSL user is pointed at a one-line manual `export PATH=...`
+using the `/mnt/c/...` mount instead.
+
+### 5.5 Open question: should conversation data be shared?
 
 `conversations\`, `conversation_summaries.db`, and `cache\conversation_metadata.json`
 are local data but **tied to the server-side account**. Sharing them can mix the
@@ -232,6 +293,15 @@ server refuses to resume conversations that don't belong to the logged-in accoun
    `other-name` whose credential hash matches `work`'s
 9. `import work.agyprofile` with a wrong password -> fails with "Wrong password, or
    the file is corrupted." and creates no partial profile directory
+10. Fresh machine, `install.cmd -Shells cmd,powershell,bash` -> `bash -l -c "agy-profile
+    list"` (login shell, Git Bash's default mode) succeeds; `bash -i -c "agy-profile
+    list"` (non-login) also succeeds
+11. Add unrelated content to `~/.bashrc`/`~/.bash_profile` by hand, re-run the installer
+    twice -> no duplicated managed block, hand-written content untouched
+12. Re-run with `-Shells cmd,powershell` (bash deselected) -> managed blocks and the
+    bash shim are removed; hand-written dotfile content survives
+13. `install.cmd -Uninstall` -> managed blocks removed from both dotfiles, install
+    directory gone, user's own dotfile lines still present
 
 ## 7. Roadmap
 
@@ -240,7 +310,8 @@ server refuses to resume conversations that don't belong to the logged-in accoun
 | **v1 (MVP)** | `save / switch / list / current / logout` + DPAPI + hash guard + auto-backup of unsaved accounts |
 | **v1.1** | `delete`, `next`, `random`, `-Force`, colored output, running-`agy` check |
 | **v1.2** | `export` / `import` — password-protected, portable profile files (section 5.3) |
-| **v2** | Optional `-WithConversations` (separate conversation data per profile, see 5.4); `agyp work -- <agy command>` alias to run one command under a given profile and switch back |
+| **v1.3** | Installer shell selection — CMD / PowerShell / Git Bash, with a bash shim and idempotent `~/.bashrc`+`~/.bash_profile` setup (section 5.4) |
+| **v2** | Optional `-WithConversations` (separate conversation data per profile, see 5.5); `agyp work -- <agy command>` alias to run one command under a given profile and switch back |
 | **Watch** | New `agy` versions may change the token storage mechanism (renamed cred target, or a move to files) -> the `current` command is the early-detection point |
 
 ---
